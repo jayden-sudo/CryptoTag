@@ -1,0 +1,10 @@
+#ifndef CONFIG_H
+#define CONFIG_H
+
+#define I2C_MASTER_SCL_IO GPIO_NUM_12
+#define I2C_MASTER_SDA_IO GPIO_NUM_13
+#define I2C_MASTER_NUM I2C_NUM_0
+#define I2C_MASTER_FREQ_HZ 400000
+#define ETHERSCAN_API_KEY "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" // "your etherscan api key"
+
+#endif // CONFIG_H
