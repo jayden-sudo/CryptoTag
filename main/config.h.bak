@@ -5,6 +5,8 @@
 #define I2C_MASTER_SDA_IO GPIO_NUM_13
 #define I2C_MASTER_NUM I2C_NUM_0
 #define I2C_MASTER_FREQ_HZ 400000
-#define ETHERSCAN_API_KEY "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" // "your etherscan api key"
+#define ETHERSCAN_API_KEY "xxx" // "your etherscan api key"
+#define ALLTICK_TOKEN "xxx" // "your alltick.co token"
+#define USE_ALLTICK
 
 #endif // CONFIG_H

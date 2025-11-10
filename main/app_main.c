@@ -94,81 +94,159 @@ static void klineClearPixel(int x /*time*/, int y /*price*/)
     (klineBitMap[index][7 - _y]) &= mask;
 }
 
-static Kline get_kline_binance()
+typedef struct
 {
-    Kline kline = {.Ok = false};
-    esp_http_client_config_t config = {
-        .url = "https://api.binance.com/api/v3/klines?symbol=ETHUSDT&interval=5m&limit=25",
-        .crt_bundle_attach = esp_crt_bundle_attach,
-    };
-    esp_http_client_handle_t client = esp_http_client_init(&config);
-    esp_http_client_set_method(client, HTTP_METHOD_GET);
-    esp_err_t err = esp_http_client_open(client, 0);
-    if (err != ESP_OK)
+    char *buffer;
+    int length;
+} http_response_t;
+
+static esp_err_t http_event_handler(esp_http_client_event_t *evt)
+{
+    http_response_t *response = (http_response_t *)evt->user_data;
+    switch (evt->event_id)
     {
-        ESP_LOGE(TAG, "Failed to open HTTP connection: %s", esp_err_to_name(err));
+    case HTTP_EVENT_ON_DATA:
+        // ESP_LOGI(TAG, "Received data, len=%d", evt->data_len);
+        if (evt->data && response)
+        {
+            response->buffer = realloc(response->buffer, response->length + evt->data_len + 1);
+            memcpy(response->buffer + response->length, evt->data, evt->data_len);
+            response->length += evt->data_len;
+            response->buffer[response->length] = 0;
+        }
+        break;
+    case HTTP_EVENT_ON_FINISH:
+        ESP_LOGI(TAG, "HTTP request finished");
+        break;
+    case HTTP_EVENT_ERROR:
+        ESP_LOGE(TAG, "HTTP request error");
+        break;
+    default:
+        break;
+    }
+    return ESP_OK;
+}
+
+static char *http_get(char *url)
+{
+    http_response_t response = {0};
+    esp_http_client_config_t config = {
+        .url = url,
+        .crt_bundle_attach = esp_crt_bundle_attach,
+        .event_handler = http_event_handler,
+        .user_data = &response,
+        .buffer_size = 1024,
+        .buffer_size_tx = 1024,
+    };
+
+    esp_http_client_handle_t client = esp_http_client_init(&config);
+    esp_err_t err = esp_http_client_perform(client);
+    if (err == ESP_OK)
+    {
+        ESP_LOGI(TAG, "HTTP GET Status = %d, content_length = %lld",
+                 esp_http_client_get_status_code(client),
+                 esp_http_client_get_content_length(client));
     }
     else
     {
-        int content_length = esp_http_client_fetch_headers(client);
-        if (content_length < 0)
-        {
-            ESP_LOGE(TAG, "HTTP client fetch headers failed");
-        }
-        else
-        {
-            char *buffer = malloc(content_length + 1);
-            buffer[0] = 0;
-            buffer[content_length] = 0;
-            int data_read = esp_http_client_read_response(client, buffer, content_length);
-            if (data_read == 0)
-            {
-                free(buffer);
-                goto end;
-            }
-            // if (data_read >= 0)
-            // {
-            //     // ESP_LOGI(TAG, "HTTP GET Status = %d, content_length = %" PRId64,
-            //     //          esp_http_client_get_status_code(client),
-            //     //          esp_http_client_get_content_length(client));
-            //     // ESP_LOG_BUFFER_HEX(TAG, output_buffer, data_read);
-            //     // ESP_LOGI(TAG, "resp:%s", output_buffer);
-            // }
-            // else
-            // {
-            //     ESP_LOGE(TAG, "Failed to read response");
-            // }
-            // ESP_LOGI(TAG, "resp:%s", buffer);
-
-            cJSON *root = cJSON_Parse(buffer);
-            if (root)
-            {
-                kline.Ok = true;
-                int array_size = cJSON_GetArraySize(root);
-                for (int i = array_size - 1; i >= 0; i--)
-                {
-                    cJSON *line = cJSON_GetArrayItem(root, i);
-                    if (!cJSON_IsArray(line))
-                        continue;
-                    const char *open = cJSON_GetArrayItem(line, 1)->valuestring;
-                    double open_num = strtod(open, NULL);
-                    int index = i - (array_size - 20);
-                    kline.open[index] = open_num;
-                    if (index == 0)
-                    {
-                        break;
-                    }
-                }
-                cJSON_Delete(root);
-            }
-            free(buffer);
-        }
+        ESP_LOGE(TAG, "HTTP GET request failed: %s", esp_err_to_name(err));
+        free(response.buffer);
+        return NULL;
     }
-end:
-    esp_http_client_close(client);
+
     esp_http_client_cleanup(client);
+    return response.buffer;
+}
+
+#ifdef USE_ALLTICK
+static Kline get_kline()
+{
+    Kline kline = {.Ok = false};
+    char *buffer = http_get("https://quote.alltick.io/quote-b-api/kline?token=" ALLTICK_TOKEN "&query={%22data%22:{%22code%22:%22ETHUSDT%22,%22kline_type%22:%221%22,%22kline_timestamp_end%22:%220%22,%22query_kline_num%22:%22100%22,%22adjust_type%22:%220%22}}");
+    ESP_LOGI(TAG, "get_kline end");
+    if (buffer == NULL)
+    {
+        return kline;
+    }
+    /*
+        {
+            "ret": 200,
+            "data": {
+                "kline_list": [
+                    {
+                        "open_price": "3591.35"
+                    },
+                    {
+                        "open_price": "3588.60"
+                    }
+                ]
+            }
+        }
+    */
+
+    cJSON *root = cJSON_Parse(buffer);
+    if (root)
+    {
+        if (cJSON_GetObjectItem(root, "ret")->valueint != 200)
+        {
+            cJSON_Delete(root);
+            free(buffer);
+            return kline;
+        }
+        cJSON *data = cJSON_GetObjectItem(root, "data");
+        cJSON *kline_list = cJSON_GetObjectItem(data, "kline_list");
+        int array_size = cJSON_GetArraySize(kline_list);
+        int _i = 0;
+        for (int i = 0; i < array_size; i += 5)
+        {
+            cJSON *item = cJSON_GetArrayItem(kline_list, i);
+            // get open_price
+            const char *open_price = cJSON_GetObjectItem(item, "open_price")->valuestring;
+            double open_price_num = strtod(open_price, NULL);
+            kline.open[_i] = open_price_num;
+            _i++;
+        }
+        kline.Ok = true;
+        cJSON_Delete(root);
+    }
+    free(buffer);
     return kline;
 }
+#else
+static Kline get_kline()
+{
+    Kline kline = {.Ok = false};
+    char *buffer = http_get("https://api.binance.com/api/v3/klines?symbol=ETHUSDT&interval=5m&limit=25");
+    ESP_LOGI(TAG, "get_kline end");
+    if (buffer == NULL)
+    {
+        return kline;
+    }
+    cJSON *root = cJSON_Parse(buffer);
+    if (root)
+    {
+        kline.Ok = true;
+        int array_size = cJSON_GetArraySize(root);
+        for (int i = array_size - 1; i >= 0; i--)
+        {
+            cJSON *line = cJSON_GetArrayItem(root, i);
+            if (!cJSON_IsArray(line))
+                continue;
+            const char *open = cJSON_GetArrayItem(line, 1)->valuestring;
+            double open_num = strtod(open, NULL);
+            int index = i - (array_size - 20);
+            kline.open[index] = open_num;
+            if (index == 0)
+            {
+                break;
+            }
+        }
+        cJSON_Delete(root);
+    }
+    free(buffer);
+    return kline;
+}
+#endif
 
 static GasFee get_basefee()
 {
@@ -316,10 +394,15 @@ void app_main(void)
                     lcd_put_cur(0, 9);
                     lcd_send_string(buf);
                 }
-
-                if (lastUpdate_price == 0 || now - lastUpdate_price > 60 * 2)
+                static const int PRICE_UPDATE_INTERVAL =
+#ifdef USE_ALLTICK
+                    50;
+#else
+                    60 * 2;
+#endif
+                if (lastUpdate_price == 0 || now - lastUpdate_price > PRICE_UPDATE_INTERVAL)
                 {
-                    Kline kline = get_kline_binance();
+                    Kline kline = get_kline();
                     if (kline.Ok)
                     {
                         lcd_backlight_off();
